@@ -1,0 +1,18 @@
+{
+  "name": "arc-mcp",
+  "version": "3.0.0",
+  "description": "Unified Arc browser MCP — page control, DevTools, network, console, emulation, Lighthouse, performance traces",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "lighthouse": "^13.0.0",
+    "ws": "^8.19.0"
+  }
+}
