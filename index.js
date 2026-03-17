@@ -144,7 +144,7 @@ async function ensureDomain(targetId, domain) {
   if (!enabledDomains.has(targetId)) enabledDomains.set(targetId, new Set());
   const domains = enabledDomains.get(targetId);
   if (!domains.has(domain)) {
-    await sendPage(targetId, `${domain}.enable`);
+    await sendPageResilient(targetId, `${domain}.enable`);
     domains.add(domain);
   }
 }
@@ -213,6 +213,42 @@ async function sendPageWithTimeout(targetId, method, params = {}, timeout = 3000
       }
     }, timeout);
   });
+}
+
+// Resilient page command: retries on stale connections and wakes suspended tabs
+async function sendPageResilient(targetId, method, params = {}, timeout = 5000) {
+  // Attempt 1: try with existing/new connection, short timeout
+  try {
+    return await sendPageWithTimeout(targetId, method, params, timeout);
+  } catch (e) {
+    if (!e.message.includes("Timeout")) throw e;
+  }
+
+  // Attempt 2: close stale connection, open fresh one
+  await closePageWs(targetId);
+  try {
+    return await sendPageWithTimeout(targetId, method, params, timeout);
+  } catch (e) {
+    if (!e.message.includes("Timeout")) throw e;
+  }
+
+  // Attempt 3: tab is likely suspended — wake it with activateTarget, then retry
+  await closePageWs(targetId);
+  try {
+    await sendBrowser("Target.activateTarget", { targetId });
+    // Give the renderer a moment to spin up
+    await new Promise((r) => setTimeout(r, 1000));
+  } catch {}
+  try {
+    return await sendPageWithTimeout(targetId, method, params, timeout);
+  } catch (e) {
+    if (e.message.includes("Timeout")) {
+      throw new Error(
+        `Page unresponsive after wake attempt — renderer may be crashed or frozen. Try reloading the tab in Arc. (${method})`
+      );
+    }
+    throw e;
+  }
 }
 
 // --- Arc AppleScript Bridge ---
@@ -434,19 +470,8 @@ async function closePageWs(targetId) {
   }
 }
 
-async function evalOnPage(targetId, expression, retried = false) {
-  try {
-    await sendPageWithTimeout(targetId, "Runtime.enable", {}, 5000);
-  } catch (e) {
-    if (!retried && e.message.includes("Timeout")) {
-      await closePageWs(targetId);
-      return evalOnPage(targetId, expression, true);
-    }
-    if (e.message.includes("Timeout")) {
-      throw new Error("Page unresponsive — renderer may be crashed or frozen. Try reloading the tab in Arc.");
-    }
-    throw e;
-  }
+async function evalOnPage(targetId, expression) {
+  await sendPageResilient(targetId, "Runtime.enable");
   const result = await sendPage(targetId, "Runtime.evaluate", {
     expression,
     returnByValue: true,
@@ -601,7 +626,7 @@ server.tool(
   },
   async ({ url, tab, section, space, activate }) => {
     const targetId = await resolveTargetId(tab, section, space);
-    await sendPage(targetId, "Page.enable");
+    await sendPageResilient(targetId, "Page.enable");
     await sendPage(targetId, "Page.navigate", { url });
     closePageWs(targetId);
     if (activate) {
@@ -728,7 +753,7 @@ server.tool(
   },
   async ({ path, full_page, tab, section, space }) => {
     const targetId = await resolveTargetId(tab, section, space);
-    await sendPage(targetId, "Page.enable");
+    await sendPageResilient(targetId, "Page.enable");
     const params = { format: "png" };
     if (full_page) {
       const metrics = await evalOnPage(targetId, "JSON.stringify({w: document.body.scrollWidth, h: document.body.scrollHeight})");
@@ -1063,7 +1088,7 @@ end tell`;
     for (const url of urls) {
       try {
         // Navigate
-        await sendPage(targetId, "Page.enable");
+        await sendPageResilient(targetId, "Page.enable");
         await sendPage(targetId, "Page.navigate", { url });
         await new Promise((r) => setTimeout(r, delay));
 
